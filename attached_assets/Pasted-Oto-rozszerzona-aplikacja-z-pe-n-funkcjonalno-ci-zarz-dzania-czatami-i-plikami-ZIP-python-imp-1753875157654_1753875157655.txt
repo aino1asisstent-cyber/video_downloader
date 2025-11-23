@@ -1,0 +1,573 @@
+Oto rozszerzona aplikacja z pełną funkcjonalnością zarządzania czatami i plikami ZIP:
+
+python
+import os
+import time
+import requests
+import pyperclip
+import json
+import re
+import tkinter as tk
+from tkinter import ttk, scrolledtext, messagebox, filedialog
+from datetime import datetime
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+import zipfile
+import webbrowser
+
+class ChatManagerApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("AI Chat & File Manager")
+        self.root.geometry("1000x800")
+        self.root.resizable(True, True)
+        
+        # Konfiguracja stanów
+        self.monitoring = False
+        self.chat_logging = False
+        self.chat_history = []
+        self.last_clip = ""
+        self.downloaded_zips = []
+        self.loaded_chats = []
+        
+        # Tworzenie zakładek
+        self.notebook = ttk.Notebook(root)
+        self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Zakładka Monitorowanie
+        self.monitor_tab = self.create_monitor_tab()
+        
+        # Zakładka Archiwum Czatów
+        self.archive_tab = self.create_archive_tab()
+        
+        # Zakładka Zarządzanie Plikami
+        self.files_tab = self.create_files_tab()
+        
+        # Status bar
+        self.status_bar = tk.Label(root, text="Gotowy", bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        # Uruchom główną pętlę
+        self.update_clipboard()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+    
+    def create_monitor_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Monitorowanie")
+        
+        # Stylizacja
+        button_style = {"font": ("Arial", 10), "bg": "#4CAF50", "fg": "white", "height": 1, "width": 15}
+        frame_style = {"bd": 2, "relief": "groove", "padx": 10, "pady": 10, "bg": "white"}
+        
+        # Funkcje ZIP
+        zip_frame = tk.LabelFrame(tab, text="📦 Pobieranie ZIP", **frame_style)
+        zip_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Button(zip_frame, text="🚀 Start Monitoring", command=self.start_monitoring, **button_style).pack(side="left", padx=5, pady=5)
+        tk.Button(zip_frame, text="⏹️ Stop", command=self.stop_monitoring, **button_style).pack(side="left", padx=5, pady=5)
+        tk.Label(zip_frame, text="Status:", bg="white").pack(side="left", padx=5)
+        self.zip_status = tk.Label(zip_frame, text="Nieaktywny", fg="red", bg="white")
+        self.zip_status.pack(side="left", padx=5)
+        
+        # Funkcje czatu
+        chat_frame = tk.LabelFrame(tab, text="💬 Logowanie Czatu", **frame_style)
+        chat_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Button(chat_frame, text="📝 Start Logging", command=self.start_chat_logging, **button_style).pack(side="left", padx=5, pady=5)
+        tk.Button(chat_frame, text="⏹️ Stop Logging", command=self.stop_chat_logging, **button_style).pack(side="left", padx=5, pady=5)
+        tk.Button(chat_frame, text="💾 Zapisz Czat", command=self.save_chat, **button_style).pack(side="left", padx=5, pady=5)
+        tk.Label(chat_frame, text="Status:", bg="white").pack(side="left", padx=5)
+        self.chat_status = tk.Label(chat_frame, text="Nieaktywny", fg="red", bg="white")
+        self.chat_status.pack(side="left", padx=5)
+        
+        # Wyświetlacz czatu
+        self.chat_display = scrolledtext.ScrolledText(tab, wrap=tk.WORD, font=("Arial", 10))
+        self.chat_display.pack(fill="both", expand=True, padx=10, pady=5)
+        self.chat_display.insert(tk.END, "Historia czatu będzie wyświetlana tutaj...\n")
+        self.chat_display.configure(state="disabled")
+        
+        return tab
+    
+    def create_archive_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Archiwum Czatów")
+        
+        frame_style = {"bd": 2, "relief": "groove", "padx": 10, "pady": 10, "bg": "white"}
+        button_style = {"font": ("Arial", 10), "bg": "#2196F3", "fg": "white", "height": 1, "width": 20}
+        
+        # Panel wczytywania
+        load_frame = tk.LabelFrame(tab, text="📂 Wczytaj historię czatu", **frame_style)
+        load_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Button(load_frame, text="Otwórz plik czatu", command=self.load_chat_file, **button_style).pack(side="left", padx=5, pady=5)
+        tk.Button(load_frame, text="Otwórz katalog", command=self.open_chat_directory, **button_style).pack(side="left", padx=5, pady=5)
+        
+        # Lista załadowanych czatów
+        self.chat_listbox = tk.Listbox(tab, height=10)
+        self.chat_listbox.pack(fill="both", expand=True, padx=10, pady=5)
+        self.chat_listbox.bind('<<ListboxSelect>>', self.display_selected_chat)
+        
+        # Panel eksportu
+        export_frame = tk.LabelFrame(tab, text="📤 Eksport czatu", **frame_style)
+        export_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Button(export_frame, text="Eksportuj do GPT", command=self.export_to_gpt, **button_style).pack(side="left", padx=5, pady=5)
+        tk.Button(export_frame, text="Kopiuj do schowka", command=self.copy_chat_to_clipboard, **button_style).pack(side="left", padx=5, pady=5)
+        
+        return tab
+    
+    def create_files_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Zarządzanie Plikami")
+        
+        frame_style = {"bd": 2, "relief": "groove", "padx": 10, "pady": 10, "bg": "white"}
+        button_style = {"font": ("Arial", 10), "bg": "#FF9800", "fg": "white", "height": 1, "width": 25}
+        
+        # Panel wyszukiwania ZIP
+        zip_frame = tk.LabelFrame(tab, text="📦 Znajdź pliki ZIP w czatach", **frame_style)
+        zip_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Button(zip_frame, text="Skanuj wszystkie czaty", command=self.scan_all_chats_for_zips, **button_style).pack(side="left", padx=5, pady=5)
+        tk.Button(zip_frame, text="Pobierz wszystkie", command=self.download_all_zips, **button_style).pack(side="left", padx=5, pady=5)
+        
+        # Lista znalezionych ZIP
+        self.zip_listbox = tk.Listbox(tab, height=10)
+        self.zip_listbox.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        # Panel zarządzania plikami
+        file_frame = tk.LabelFrame(tab, text="🗂️ Zarządzanie pobranymi plikami", **frame_style)
+        file_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Button(file_frame, text="Otwórz folder z ZIP", command=self.open_zip_directory, **button_style).pack(side="left", padx=5, pady=5)
+        tk.Button(file_frame, text="Pokaż ścieżki w konsoli", command=self.show_zip_paths, **button_style).pack(side="left", padx=5, pady=5)
+        tk.Button(file_frame, text="Rozpakuj wybrany ZIP", command=self.extract_selected_zip, **button_style).pack(side="left", padx=5, pady=5)
+        
+        return tab
+
+    def start_monitoring(self):
+        self.monitoring = True
+        self.zip_status.config(text="Aktywny", fg="green")
+        self.update_status("Monitorowanie ZIP włączone")
+
+    def stop_monitoring(self):
+        self.monitoring = False
+        self.zip_status.config(text="Nieaktywny", fg="red")
+        self.update_status("Monitorowanie ZIP wyłączone")
+
+    def start_chat_logging(self):
+        self.chat_logging = True
+        self.chat_status.config(text="Aktywny", fg="green")
+        self.update_status("Logowanie czatu włączone")
+        self.add_chat_entry("System", "Rozpoczęto logowanie czatu")
+
+    def stop_chat_logging(self):
+        self.chat_logging = False
+        self.chat_status.config(text="Nieaktywny", fg="red")
+        self.update_status("Logowanie czatu wyłączone")
+        self.add_chat_entry("System", "Zatrzymano logowanie czatu")
+
+    def download_zip(self, url):
+        try:
+            # Oczyszczanie nazwy pliku z URL
+            filename = unquote(url.split("/")[-1])
+            if not filename.endswith('.zip'):
+                filename += '.zip'
+            
+            # Tworzenie folderu pobierania
+            download_dir = Path.home() / "zip_downloads"
+            download_dir.mkdir(exist_ok=True)
+            file_path = download_dir / filename
+            
+            # Sprawdź czy plik już istnieje
+            if file_path.exists():
+                self.update_status(f"Plik już istnieje: {file_path}")
+                self.downloaded_zips.append(str(file_path))
+                return True
+            
+            # Pobieranie pliku
+            self.update_status(f"Pobieranie: {url}")
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            
+            with open(file_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            self.update_status(f"Zapisano: {file_path}")
+            self.downloaded_zips.append(str(file_path))
+            return True
+            
+        except Exception as e:
+            self.update_status(f"Błąd: {str(e)}")
+            return False
+
+    def add_chat_entry(self, role, content):
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        entry = {
+            "timestamp": timestamp,
+            "role": role,
+            "content": content
+        }
+        self.chat_history.append(entry)
+        
+        # Aktualizacja wyświetlacza
+        self.chat_display.configure(state="normal")
+        self.chat_display.insert(tk.END, f"[{timestamp}] {role}:\n{content}\n\n")
+        self.chat_display.configure(state="disabled")
+        self.chat_display.yview(tk.END)
+
+    def save_chat(self):
+        try:
+            if not self.chat_history:
+                messagebox.showinfo("Info", "Brak historii czatu do zapisania")
+                return
+                
+            chat_dir = Path.home() / "chat_history"
+            chat_dir.mkdir(exist_ok=True)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            file_path = chat_dir / f"chat_{timestamp}.txt"
+            
+            with open(file_path, 'w', encoding='utf-8') as f:
+                for entry in self.chat_history:
+                    f.write(f"[{entry['timestamp']}] {entry['role']}:\n")
+                    f.write(f"{entry['content']}\n\n")
+            
+            self.update_status(f"Zapisano historię czatu: {file_path}")
+            messagebox.showinfo("Sukces", f"Historia czatu zapisana w:\n{file_path}")
+            
+            # Dodaj do listy załadowanych czatów
+            self.loaded_chats.append({
+                "path": str(file_path),
+                "content": self.get_chat_content()
+            })
+            self.update_chat_listbox()
+            
+        except Exception as e:
+            messagebox.showerror("Błąd", f"Nie udało się zapisać czatu: {str(e)}")
+    
+    def get_chat_content(self):
+        return "\n".join(
+            f"[{entry['timestamp']}] {entry['role']}:\n{entry['content']}" 
+            for entry in self.chat_history
+        )
+
+    def update_status(self, message):
+        self.status_bar.config(text=message)
+        print(message)
+
+    def update_clipboard(self):
+        try:
+            current_clip = pyperclip.paste().strip()
+            
+            # Monitorowanie ZIP
+            if (self.monitoring and 
+                current_clip != self.last_clip and 
+                current_clip.startswith(('http://', 'https://')) and 
+                '.zip' in current_clip.lower()):
+                
+                if self.download_zip(current_clip):
+                    self.last_clip = current_clip
+                else:
+                    self.last_clip = ""
+            
+            # Monitorowanie czatu
+            if (self.chat_logging and 
+                current_clip != self.last_clip and 
+                current_clip and 
+                len(current_clip) > 10):
+                
+                # Automatyczne wykrywanie roli
+                role = "User"
+                if any(phrase in current_clip for phrase in ["Assistant:", "AI:", "ChatGPT:", "DeepSeek:"]):
+                    role = "Assistant"
+                
+                self.add_chat_entry(role, current_clip)
+                self.last_clip = current_clip
+        
+        except Exception as e:
+            self.update_status(f"Błąd monitorowania: {str(e)}")
+        
+        self.root.after(1000, self.update_clipboard)
+
+    def on_closing(self):
+        if self.chat_logging:
+            self.stop_chat_logging()
+        self.root.destroy()
+    
+    # Funkcje archiwum czatów
+    def load_chat_file(self):
+        file_path = filedialog.askopenfilename(
+            title="Otwórz plik historii czatu",
+            filetypes=(("Pliki tekstowe", "*.txt"), ("Wszystkie pliki", "*.*"))
+        )
+        if not file_path:
+            return
+            
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Parsowanie historii czatu
+            chat_entries = []
+            pattern = r'\[(.*?)\] (.*?):\n(.*?)(?=\n\n\[|$)'
+            matches = re.findall(pattern, content, re.DOTALL)
+            
+            for match in matches:
+                chat_entries.append({
+                    "timestamp": match[0],
+                    "role": match[1],
+                    "content": match[2].strip()
+                })
+            
+            self.loaded_chats.append({
+                "path": file_path,
+                "content": content,
+                "entries": chat_entries
+            })
+            
+            self.update_status(f"Załadowano plik czatu: {file_path}")
+            self.update_chat_listbox()
+            
+        except Exception as e:
+            messagebox.showerror("Błąd", f"Nie udało się wczytać pliku: {str(e)}")
+    
+    def update_chat_listbox(self):
+        self.chat_listbox.delete(0, tk.END)
+        for chat in self.loaded_chats:
+            filename = os.path.basename(chat["path"])
+            self.chat_listbox.insert(tk.END, filename)
+    
+    def display_selected_chat(self, event):
+        if not self.loaded_chats:
+            return
+            
+        selection = self.chat_listbox.curselection()
+        if not selection:
+            return
+            
+        index = selection[0]
+        chat = self.loaded_chats[index]
+        
+        # Tworzenie nowego okna z pełną treścią czatu
+        chat_window = tk.Toplevel(self.root)
+        chat_window.title(f"Czat: {os.path.basename(chat['path'])}")
+        chat_window.geometry("800x600")
+        
+        text_area = scrolledtext.ScrolledText(chat_window, wrap=tk.WORD)
+        text_area.pack(fill="both", expand=True, padx=10, pady=10)
+        text_area.insert(tk.END, chat["content"])
+        text_area.configure(state="disabled")
+        
+        # Dodaj przycisk do skanowania ZIP
+        tk.Button(
+            chat_window, 
+            text="Skanuj w poszukiwaniu ZIP", 
+            command=lambda: self.scan_chat_for_zips(chat),
+            bg="#FF9800", fg="white"
+        ).pack(pady=10)
+    
+    def open_chat_directory(self):
+        chat_dir = Path.home() / "chat_history"
+        chat_dir.mkdir(exist_ok=True)
+        webbrowser.open(f"file://{chat_dir}")
+    
+    def export_to_gpt(self):
+        selection = self.chat_listbox.curselection()
+        if not selection:
+            messagebox.showinfo("Info", "Wybierz czat do eksportu")
+            return
+            
+        index = selection[0]
+        chat = self.loaded_chats[index]
+        pyperclip.copy(chat["content"])
+        self.update_status("Zawartość czatu skopiowana do schowka")
+        messagebox.showinfo("Sukces", "Czat skopiowany do schowka. Możesz go wkleić bezpośrednio do GPT!")
+    
+    def copy_chat_to_clipboard(self):
+        selection = self.chat_listbox.curselection()
+        if not selection:
+            messagebox.showinfo("Info", "Wybierz czat do skopiowania")
+            return
+            
+        index = selection[0]
+        chat = self.loaded_chats[index]
+        pyperclip.copy(chat["content"])
+        self.update_status("Zawartość czatu skopiowana do schowka")
+    
+    # Funkcje zarządzania plikami
+    def scan_all_chats_for_zips(self):
+        self.found_zips = []
+        self.zip_listbox.delete(0, tk.END)
+        
+        for chat in self.loaded_chats:
+            self.scan_chat_for_zips(chat, add_to_list=True)
+        
+        if not self.found_zips:
+            messagebox.showinfo("Info", "Nie znaleziono linków ZIP w żadnym czacie")
+        else:
+            self.update_status(f"Znaleziono {len(self.found_zips)} linków ZIP w czatach")
+    
+    def scan_chat_for_zips(self, chat, add_to_list=False):
+        # Wyszukaj wszystkie linki .zip w tekście
+        zip_links = re.findall(r'https?://[^\s]+\.zip', chat["content"], re.IGNORECASE)
+        
+        if not zip_links:
+            if not add_to_list:
+                messagebox.showinfo("Info", "Nie znaleziono linków .zip w tym czacie")
+            return zip_links
+        
+        if add_to_list:
+            self.found_zips.extend(zip_links)
+            for link in zip_links:
+                self.zip_listbox.insert(tk.END, link)
+        
+        return zip_links
+    
+    def download_all_zips(self):
+        if not self.found_zips:
+            messagebox.showinfo("Info", "Brak linków ZIP do pobrania")
+            return
+            
+        success_count = 0
+        for link in self.found_zips:
+            if self.download_zip(link):
+                success_count += 1
+        
+        messagebox.showinfo("Sukces", f"Pobrano {success_count}/{len(self.found_zips)} plików ZIP")
+    
+    def open_zip_directory(self):
+        zip_dir = Path.home() / "zip_downloads"
+        zip_dir.mkdir(exist_ok=True)
+        webbrowser.open(f"file://{zip_dir}")
+    
+    def show_zip_paths(self):
+        if not self.downloaded_zips:
+            messagebox.showinfo("Info", "Brak pobranych plików ZIP")
+            return
+            
+        paths_window = tk.Toplevel(self.root)
+        paths_window.title("Ścieżki do plików ZIP")
+        paths_window.geometry("600x400")
+        
+        text_area = scrolledtext.ScrolledText(paths_window, wrap=tk.WORD)
+        text_area.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        for path in self.downloaded_zips:
+            text_area.insert(tk.END, path + "\n")
+        
+        text_area.configure(state="disabled")
+        
+        tk.Button(
+            paths_window, 
+            text="Kopiuj ścieżki", 
+            command=lambda: pyperclip.copy("\n".join(self.downloaded_zips)),
+            bg="#4CAF50", fg="white"
+        ).pack(pady=10)
+    
+    def extract_selected_zip(self):
+        selection = self.zip_listbox.curselection()
+        if not selection:
+            messagebox.showinfo("Info", "Wybierz plik ZIP do rozpakowania")
+            return
+            
+        index = selection[0]
+        zip_path = self.downloaded_zips[index]
+        
+        extract_dir = filedialog.askdirectory(title="Wybierz folder do rozpakowania")
+        if not extract_dir:
+            return
+            
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
+            
+            self.update_status(f"Rozpakowano {zip_path} do {extract_dir}")
+            messagebox.showinfo("Sukces", f"Plik ZIP został rozpakowany do:\n{extract_dir}")
+        except Exception as e:
+            messagebox.showerror("Błąd", f"Nie udało się rozpakować pliku: {str(e)}")
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = ChatManagerApp(root)
+    root.mainloop()
+Pełna lista funkcjonalności:
+1. Monitorowanie w czasie rzeczywistym
+Automatyczne wykrywanie linków ZIP w schowku
+
+Logowanie całej historii czatów z rozróżnieniem ról
+
+Ręczne sterowanie procesem monitorowania
+
+2. Zarządzanie archiwum czatów
+Wczytywanie zapisanych historii czatów
+
+Przeglądanie pełnej treści czatów w osobnych oknach
+
+Eksport czatów do GPT (kopiowanie do schowka)
+
+Otwieranie katalogu z historią czatów
+
+3. Zaawansowane zarządzanie plikami
+Skanowanie czatów w poszukiwaniu linków ZIP
+
+Zbiorcze pobieranie wszystkich znalezionych plików ZIP
+
+Przeglądanie pobranych plików ZIP
+
+Rozpakowywanie archiwów ZIP
+
+Wyświetlanie pełnych ścieżek do plików
+
+4. Integracja z systemem
+Automatyczne tworzenie katalogów:
+
+chat_history - przechowuje wszystkie zapisane czaty
+
+zip_downloads - przechowuje pobrane archiwa ZIP
+
+Otwieranie folderów w eksploratorze plików
+
+Kopiowanie ścieżek do schowka
+
+Jak korzystać z aplikacji:
+Monitorowanie czatów:
+
+Uruchom aplikację
+
+Kliknij "Start Logging" w zakładce Monitorowanie
+
+Kopiuj fragmenty rozmów z ChatGPT/DeepSeek
+
+Aplikacja automatycznie rozpozna role i zapisze historię
+
+Zapisywanie i wczytywanie czatów:
+
+Użyj "Zapisz Czat" aby zapisać bieżącą rozmowę
+
+W zakładce Archiwum wczytaj zapisane czaty
+
+Przeglądaj pełne historie rozmów
+
+Pobieranie i zarządzanie plikami ZIP:
+
+W zakładce Pliki kliknij "Skanuj wszystkie czaty"
+
+Aplikacja znajdzie wszystkie linki ZIP w historii
+
+Użyj "Pobierz wszystkie" aby ściągnąć archiwa
+
+Rozpakuj wybrane pliki ZIP
+
+Eksport do GPT:
+
+Wybierz czat w zakładce Archiwum
+
+Kliknij "Eksportuj do GPT"
+
+Wklej zawartość schowka do nowego czatu w GPT
+
+Wymagania instalacyjne:
+bash
+pip install requests pyperclip
+Ta aplikacja zapewnia kompleksowe rozwiązanie do zarządzania całą historią rozmów z AI oraz plikami, które są w nich udostępniane. Wszystkie dane są przechowywane lokalnie, a użytkownik ma pełną kontrolę nad procesem monitorowania i zarządzania plikami.

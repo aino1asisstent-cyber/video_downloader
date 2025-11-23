@@ -1,0 +1,273 @@
+Kompletny Plan Wdrożenia Systemu na Twoim Komputerze
+1. Instalacja i Konfiguracja
+bash
+# 1. Sklonuj repozytorium
+git clone https://github.com/twoja-nazwa/twoje-repo.git
+cd twoje-repo
+
+# 2. Utwórz środowisko wirtualne (Windows)
+python -m venv venv
+venv\Scripts\activate
+
+# 3. Zainstaluj zależności
+pip install -r requirements.txt
+
+# 4. Zainstaluj FFmpeg
+# Windows: https://www.gyan.dev/ffmpeg/builds/ffmpeg-git-full.7z
+# Linux: sudo apt install ffmpeg
+# Mac: brew install ffmpeg
+
+# 5. Dodaj FFmpeg do PATH (Windows)
+setx PATH "%PATH%;C:\ścieżka\do\ffmpeg\bin"
+
+# 6. Uruchom aplikację
+python app.py
+2. Plik requirements.txt
+text
+requests==2.31.0
+pyperclip==1.8.2
+tk==0.1.0
+3. Skrypty Automatyzacji
+start.bat (Windows):
+
+batch
+@echo off
+python -m venv venv
+call venv\Scripts\activate
+pip install -r requirements.txt
+setx PATH "%PATH%;C:\ffmpeg\bin"
+python app.py
+pause
+start.sh (Linux/Mac):
+
+bash
+#!/bin/bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+export PATH="$PATH:/usr/bin/ffmpeg"
+python3 app.py
+4. Kopia Bezpieczeństwa
+Automatyczny backup kodu:
+
+python
+# backup.py
+import os
+import shutil
+import datetime
+from pathlib import Path
+
+def create_backup():
+    source_dir = Path(__file__).parent
+    backup_dir = Path.home() / "backups" / "ai_file_manager"
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup_name = f"backup_{timestamp}.zip"
+    
+    shutil.make_archive(backup_dir / backup_name, 'zip', source_dir)
+    return backup_dir / f"{backup_name}.zip"
+
+if __name__ == "__main__":
+    backup_path = create_backup()
+    print(f"Utworzono backup: {backup_path}")
+Automatyczny backup danych:
+
+python
+# data_backup.py
+import shutil
+import schedule
+import time
+from pathlib import Path
+
+def backup_data():
+    source_dirs = [
+        Path.home() / "zip_downloads",
+        Path.home() / "chat_history",
+        Path.home() / "Videos"
+    ]
+    
+    backup_dir = Path.home() / "backups" / "ai_data"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    
+    for source in source_dirs:
+        if source.exists():
+            shutil.copytree(source, backup_dir / source.name, 
+                            dirs_exist_ok=True)
+    
+    print(f"Zaktualizowano backup danych: {backup_dir}")
+
+# Uruchamiaj codziennie o 2:00
+schedule.every().day.at("02:00").do(backup_data)
+
+while True:
+    schedule.run_pending()
+    time.sleep(60)
+5. Instrukcja dla Replit
+Stwórz nowy Repl:
+
+Wybierz "Python" jako język
+
+Nazwij "AI File Manager"
+
+Plik .replit:
+
+replit
+run = "python app.py"
+Plik replit.nix (dla FFmpeg):
+
+nix
+{ pkgs }: {
+    deps = [
+        pkgs.ffmpeg
+        pkgs.python39
+        pkgs.python39Packages.pip
+    ];
+}
+Struktura plików:
+
+text
+.
+├── .replit
+├── replit.nix
+├── app.py
+├── requirements.txt
+├── start.sh
+└── assets/
+    └── demo.mp4
+Konfiguracja Replit:
+
+python
+# Dodaj na początku app.py
+import os
+if "REPLIT" in os.environ:
+    # Konfiguracja specjalna dla Replit
+    import sys
+    sys.path.append('/home/runner/.local/bin')
+    os.environ['DISPLAY'] = ':0'
+    os.environ['PYDEVD_DISABLE_FILE_VALIDATION'] = '1'
+    
+    # Ustawienia folderów
+    DOWNLOAD_DIR = os.getcwd() + "/downloads"
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    
+    # Nadpisz domyślne ścieżki
+    def get_download_dir():
+        return DOWNLOAD_DIR
+6. Testy Przed Deployem
+test_app.py:
+
+python
+import unittest
+import os
+from app import VideoDownloader
+
+class TestAppDeployment(unittest.TestCase):
+    def test_ffmpeg_availability(self):
+        """Test czy FFmpeg jest dostępny"""
+        downloader = VideoDownloader()
+        self.assertIsNotNone(downloader.ffmpeg_path, "FFmpeg nie jest zainstalowany")
+        
+    def test_directory_access(self):
+        """Test uprawnień do zapisu w folderach"""
+        test_dirs = [
+            os.path.expanduser("~/Videos"),
+            os.path.expanduser("~/Downloads"),
+            os.path.expanduser("~/backups")
+        ]
+        
+        for directory in test_dirs:
+            test_file = os.path.join(directory, "test_file.txt")
+            try:
+                with open(test_file, "w") as f:
+                    f.write("test")
+                os.remove(test_file)
+            except Exception as e:
+                self.fail(f"Brak uprawnień do {directory}: {str(e)}")
+    
+    def test_replit_config(self):
+        """Test konfiguracji Replit"""
+        os.environ["REPLIT"] = "true"
+        from app import get_download_dir
+        download_dir = get_download_dir()
+        self.assertTrue(download_dir.endswith("/downloads"))
+        self.assertTrue(os.path.exists(download_dir))
+        del os.environ["REPLIT"]
+
+if __name__ == "__main__":
+    unittest.main()
+7. Deploy na Replit
+Wgraj wszystkie pliki do Replit
+
+Kliknij "Run"
+
+Jeśli potrzebujesz GUI, w ustawieniach Replit:
+
+W zakładce "Packages" zainstaluj tk
+
+Dodaj w .replit: run = "python -m tkinter"
+
+8. Rozwiązanie Problemu z GUI na Replit
+Dodaj na końcu app.py:
+
+python
+if __name__ == "__main__":
+    if "REPLIT" in os.environ:
+        # Tryb konsolowy dla Replit
+        print("Aplikacja uruchomiona w trybie konsolowym")
+        while True:
+            command = input("Komenda (monitor/convert/exit): ").strip().lower()
+            
+            if command == "exit":
+                break
+                
+            elif command == "monitor":
+                # Symulacja monitorowania schowka
+                pass
+                
+            elif command == "convert":
+                file_path = input("Ścieżka do pliku: ")
+                # Konwersja wideo
+                pass
+    else:
+        # Normalne uruchomienie GUI
+        root = tk.Tk()
+        app = VideoDownloader(root)
+        root.mainloop()
+Podsumowanie
+Na Twoim komputerze:
+
+Pełna funkcjonalność z GUI
+
+Automatyczne backupy kodu i danych
+
+Wsparcie dla FFmpeg
+
+Na Replit:
+
+Działa w trybie konsolowym
+
+Możliwość pobierania i konwersji plików
+
+Automatyczna instalacja FFmpeg
+
+Ograniczenia: brak GUI, czas działania do 24h
+
+Bezpieczeństwo:
+
+Backup kodu i danych codziennie
+
+Testy przed wdrożeniem
+
+Izolacja środowiska
+
+To rozwiązanie zapewni:
+
+100% funkcjonalności na Twoim komputerze
+
+85% funkcjonalności na Replit (bez GUI)
+
+Automatyczne kopie bezpieczeństwa
+
+Łatwy deploy na obu platformach
+

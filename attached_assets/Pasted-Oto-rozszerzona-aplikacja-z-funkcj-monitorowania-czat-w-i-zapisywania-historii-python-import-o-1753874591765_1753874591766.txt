@@ -1,0 +1,266 @@
+Oto rozszerzona aplikacja z funkcją monitorowania czatów i zapisywania historii:
+
+python
+import os
+import time
+import requests
+import pyperclip
+import json
+import tkinter as tk
+from tkinter import scrolledtext, messagebox
+from datetime import datetime
+from pathlib import Path
+from urllib.parse import unquote
+
+class ClipboardMonitorApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Clipboard Monitor Pro")
+        self.root.geometry("700x600")
+        self.root.resizable(True, True)
+        
+        self.monitoring = False
+        self.chat_logging = False
+        self.chat_history = []
+        self.last_clip = ""
+        
+        # Stylizacja
+        self.root.configure(bg="#f0f0f0")
+        button_style = {"font": ("Arial", 10), "bg": "#4CAF50", "fg": "white", "height": 1, "width": 15}
+        frame_style = {"bd": 2, "relief": "groove", "padx": 10, "pady": 10, "bg": "white"}
+        
+        # Ramka dla funkcji ZIP
+        zip_frame = tk.LabelFrame(root, text="📦 ZIP Downloader", **frame_style)
+        zip_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Button(zip_frame, text="🚀 Start Monitoring", command=self.start_monitoring, **button_style).pack(side="left", padx=5, pady=5)
+        tk.Button(zip_frame, text="⏹️ Stop", command=self.stop_monitoring, **button_style).pack(side="left", padx=5, pady=5)
+        tk.Label(zip_frame, text="Status:", bg="white").pack(side="left", padx=5)
+        self.zip_status = tk.Label(zip_frame, text="Nieaktywny", fg="red", bg="white")
+        self.zip_status.pack(side="left", padx=5)
+        
+        # Ramka dla funkcji czatu
+        chat_frame = tk.LabelFrame(root, text="💬 Chat Logger", **frame_style)
+        chat_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Button(chat_frame, text="📝 Start Chat Logging", command=self.start_chat_logging, **button_style).pack(side="left", padx=5, pady=5)
+        tk.Button(chat_frame, text="⏹️ Stop Logging", command=self.stop_chat_logging, **button_style).pack(side="left", padx=5, pady=5)
+        tk.Button(chat_frame, text="💾 Save Chat", command=self.save_chat, **button_style).pack(side="left", padx=5, pady=5)
+        tk.Label(chat_frame, text="Status:", bg="white").pack(side="left", padx=5)
+        self.chat_status = tk.Label(chat_frame, text="Nieaktywny", fg="red", bg="white")
+        self.chat_status.pack(side="left", padx=5)
+        
+        # Wyświetlacz historii czatu
+        self.chat_display = scrolledtext.ScrolledText(root, wrap=tk.WORD, font=("Arial", 10))
+        self.chat_display.pack(fill="both", expand=True, padx=10, pady=5)
+        self.chat_display.insert(tk.END, "Historia czatu będzie wyświetlana tutaj...\n")
+        self.chat_display.configure(state="disabled")
+        
+        # Status bar
+        self.status_bar = tk.Label(root, text="Gotowy", bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        # Uruchom główną pętlę
+        self.update_clipboard()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def start_monitoring(self):
+        self.monitoring = True
+        self.zip_status.config(text="Aktywny", fg="green")
+        self.update_status("Monitorowanie ZIP włączone")
+
+    def stop_monitoring(self):
+        self.monitoring = False
+        self.zip_status.config(text="Nieaktywny", fg="red")
+        self.update_status("Monitorowanie ZIP wyłączone")
+
+    def start_chat_logging(self):
+        self.chat_logging = True
+        self.chat_status.config(text="Aktywny", fg="green")
+        self.update_status("Logowanie czatu włączone")
+        self.add_chat_entry("System", "Rozpoczęto logowanie czatu")
+
+    def stop_chat_logging(self):
+        self.chat_logging = False
+        self.chat_status.config(text="Nieaktywny", fg="red")
+        self.update_status("Logowanie czatu wyłączone")
+        self.add_chat_entry("System", "Zatrzymano logowanie czatu")
+
+    def download_zip(self, url):
+        try:
+            # Oczyszczanie nazwy pliku z URL
+            filename = unquote(url.split("/")[-1])
+            if not filename.endswith('.zip'):
+                filename += '.zip'
+            
+            # Tworzenie folderu pobierania
+            download_dir = Path.home() / "zip_downloads"
+            download_dir.mkdir(exist_ok=True)
+            file_path = download_dir / filename
+            
+            # Pobieranie pliku
+            self.update_status(f"Pobieranie: {url}")
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            
+            with open(file_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            self.update_status(f"Zapisano: {file_path}")
+            return True
+            
+        except Exception as e:
+            self.update_status(f"Błąd: {str(e)}")
+            return False
+
+    def add_chat_entry(self, role, content):
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        entry = {
+            "timestamp": timestamp,
+            "role": role,
+            "content": content
+        }
+        self.chat_history.append(entry)
+        
+        # Aktualizacja wyświetlacza
+        self.chat_display.configure(state="normal")
+        self.chat_display.insert(tk.END, f"[{timestamp}] {role}:\n{content}\n\n")
+        self.chat_display.configure(state="disabled")
+        self.chat_display.yview(tk.END)
+
+    def save_chat(self):
+        try:
+            if not self.chat_history:
+                messagebox.showinfo("Info", "Brak historii czatu do zapisania")
+                return
+                
+            chat_dir = Path.home() / "chat_history"
+            chat_dir.mkdir(exist_ok=True)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            file_path = chat_dir / f"chat_{timestamp}.txt"
+            
+            with open(file_path, 'w', encoding='utf-8') as f:
+                for entry in self.chat_history:
+                    f.write(f"[{entry['timestamp']}] {entry['role']}:\n")
+                    f.write(f"{entry['content']}\n\n")
+            
+            self.update_status(f"Zapisano historię czatu: {file_path}")
+            messagebox.showinfo("Sukces", f"Historia czatu zapisana w:\n{file_path}")
+            
+        except Exception as e:
+            messagebox.showerror("Błąd", f"Nie udało się zapisać czatu: {str(e)}")
+
+    def update_status(self, message):
+        self.status_bar.config(text=message)
+        print(message)
+
+    def update_clipboard(self):
+        try:
+            current_clip = pyperclip.paste().strip()
+            
+            # Monitorowanie ZIP
+            if (self.monitoring and 
+                current_clip != self.last_clip and 
+                current_clip.startswith(('http://', 'https://')) and 
+                '.zip' in current_clip.lower()):
+                
+                if self.download_zip(current_clip):
+                    self.last_clip = current_clip
+                else:
+                    self.last_clip = ""
+            
+            # Monitorowanie czatu
+            if (self.chat_logging and 
+                current_clip != self.last_clip and 
+                current_clip and 
+                len(current_clip) > 10):
+                
+                # Automatyczne wykrywanie roli na podstawie typowych wzorców
+                role = "User"
+                if any(phrase in current_clip for phrase in ["Assistant:", "AI:", "ChatGPT:", "DeepSeek:"]):
+                    role = "Assistant"
+                
+                self.add_chat_entry(role, current_clip)
+                self.last_clip = current_clip
+        
+        except Exception as e:
+            self.update_status(f"Błąd monitorowania: {str(e)}")
+        
+        self.root.after(1000, self.update_clipboard)
+
+    def on_closing(self):
+        if self.chat_logging:
+            self.stop_chat_logging()
+        self.root.destroy()
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = ClipboardMonitorApp(root)
+    root.mainloop()
+Funkcjonalności monitorowania czatu:
+Automatyczne wykrywanie ról:
+
+System rozpoznaje czy wiadomość pochodzi od użytkownika czy asystenta
+
+Wykrywa typowe oznaczenia: "Assistant:", "AI:", "ChatGPT:", "DeepSeek:"
+
+Formatowanie historii:
+
+plaintext
+[2024-07-30 14:25:36] User:
+Jak działa ta aplikacja?
+
+[2024-07-30 14:26:01] Assistant:
+Aplikacja monitoruje schowek i zapisuje...
+Zapis do pliku:
+
+Pliki tekstowe zapisywane w folderze chat_history
+
+Nazwy plików zawierają znacznik czasu: chat_20240730_142536.txt
+
+Podgląd na żywo:
+
+Wbudowany wyświetlacz z przewijaniem pokazujący całą historię czatu
+
+Automatyczne przewijanie do najnowszej wiadomości
+
+Jak korzystać:
+Rozpoczęcie logowania:
+
+Kliknij "📝 Start Chat Logging"
+
+Aplikacja zacznie monitorować schowek
+
+Kopiowanie czatu:
+
+Zaznacz i skopiuj (Ctrl+C) fragmenty rozmowy z ChatGPT/DeepSeek
+
+Aplikacja automatycznie rozpozna autora i doda do historii
+
+Zapis czatu:
+
+Kliknij "💾 Save Chat" aby zapisać całą historię do pliku
+
+Pliki są zapisywane w C:\Users\twoja_nazwa\chat_history\
+
+Kontynuacja rozmowy:
+
+W nowym czacie wklej zawartość zapisanego pliku
+
+Możesz kontynuować rozmowę z pełnym kontekstem
+
+Bezpieczeństwo i kontrola:
+Dane są przechowywane lokalnie
+
+Logowanie wymaga ręcznego włączenia
+
+Pełna kontrola przez przyciski start/stop
+
+Brak śledzenia po zamknięciu aplikacji
+
+Wymagania instalacyjne:
+bash
+pip install requests pyperclip
+Aplikacja działa w trybie okienkowym (Windows/Mac/Linux) i łączy funkcję pobierania plików ZIP z zaawansowanym logowaniem czatów AI.

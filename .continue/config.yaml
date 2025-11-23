@@ -1,0 +1,18 @@
+name: FIRE GROK
+version: 1.0.0
+schema: v1
+
+models:
+  - name: DeepSeek Lite
+    provider: fireworks
+    model: deepseek-coder-v2-lite-instruct
+    apiKey: fw_3207gKYKo5bcY3Xuuuh6LaAOy
+    apiBase: https://api.fireworks.ai/inference/v1
+    useLegacyCompletionsEndpoint: false
+    roles:
+      - chat
+      - edit
+      - apply
+    defaultCompletionOptions:
+      temperature: 0.7
+      maxTokens: 4096

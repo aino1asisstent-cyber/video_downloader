@@ -1,0 +1,112 @@
+entrypoint = "main.py"
+modules = ["python-3.11"]
+
+[nix]
+channel = "stable-25_05"
+packages = ["zip"]
+
+[unitTest]
+language = "python3"
+
+[gitHubImport]
+requiredFiles = [".replit", "replit.nix"]
+
+[deployment]
+run = ["python3", "main.py"]
+deploymentTarget = "cloudrun"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Test & Run"
+author = 45076038
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python run_with_tests.py"
+
+[[workflows.workflow]]
+name = "Full System Test"
+author = 45076038
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python test_video_downloader.py"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python backup_system.py"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python main.py"
+
+[[workflows.workflow]]
+name = "Comprehensive Test Suite"
+author = 45076038
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python comprehensive_test.py"
+
+[[workflows.workflow]]
+name = "Unit Tests"
+author = 45076038
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python test_video_downloader.py"
+
+[[workflows.workflow]]
+name = "Backup System Test"
+author = 45076038
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python backup_system.py --list-backups"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python backup_system.py --create-backup"
+
+[[workflows.workflow]]
+name = "Run Tests"
+author = "agent"
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python tests/comprehensive_test.py"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow]]
+name = "Run Tests"
+author = "agent"
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python comprehensive_test.py"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Run Tests"
+
+[agent]
+expertMode = true

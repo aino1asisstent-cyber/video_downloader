@@ -1,0 +1,453 @@
+Oto usprawniona aplikacja, która specjalizuje się w pobieraniu i konwertowaniu plików wideo, w szczególności do formatu MP4:
+
+python
+import os
+import re
+import time
+import requests
+import pyperclip
+import tkinter as tk
+from tkinter import ttk, scrolledtext, messagebox, filedialog
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+from datetime import datetime
+import subprocess
+import threading
+import sys
+
+class VideoDownloader:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Video Downloader & Converter")
+        self.root.geometry("900x700")
+        self.root.resizable(True, True)
+        
+        # Konfiguracja
+        self.monitoring = False
+        self.last_clip = ""
+        self.downloaded_files = []
+        self.ffmpeg_path = self.find_ffmpeg()
+        
+        # Tworzenie interfejsu
+        self.create_ui()
+        
+        # Uruchom główną pętlę
+        self.update_clipboard()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+    
+    def create_ui(self):
+        # Główny frame
+        main_frame = tk.Frame(self.root, padx=10, pady=10)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Panel monitorowania
+        monitor_frame = tk.LabelFrame(main_frame, text="🎬 Pobieranie Wideo", padx=10, pady=10)
+        monitor_frame.pack(fill="x", pady=(0, 10))
+        
+        tk.Button(monitor_frame, text="🚀 Start Monitoring", command=self.start_monitoring,
+                 bg="#4CAF50", fg="white", height=1, width=15).grid(row=0, column=0, padx=5, pady=5)
+        tk.Button(monitor_frame, text="⏹️ Stop", command=self.stop_monitoring,
+                 bg="#F44336", fg="white", height=1, width=15).grid(row=0, column=1, padx=5, pady=5)
+        
+        self.monitor_status = tk.Label(monitor_frame, text="Status: Nieaktywny", fg="red")
+        self.monitor_status.grid(row=0, column=2, padx=10)
+        
+        # Konfiguracja
+        config_frame = tk.Frame(main_frame)
+        config_frame.pack(fill="x", pady=(0, 10))
+        
+        tk.Label(config_frame, text="Folder pobierania:").grid(row=0, column=0, padx=5, sticky="w")
+        self.download_dir_var = tk.StringVar(value=str(Path.home() / "Videos"))
+        tk.Entry(config_frame, textvariable=self.download_dir_var, width=50).grid(row=0, column=1, padx=5)
+        tk.Button(config_frame, text="Przeglądaj", command=self.browse_directory).grid(row=0, column=2, padx=5)
+        
+        # Panel konwersji
+        convert_frame = tk.LabelFrame(main_frame, text="🔧 Konwersja Wideo", padx=10, pady=10)
+        convert_frame.pack(fill="x", pady=(0, 10))
+        
+        tk.Label(convert_frame, text="Plik źródłowy:").grid(row=0, column=0, padx=5, sticky="w")
+        self.video_path_var = tk.StringVar()
+        tk.Entry(convert_frame, textvariable=self.video_path_var, width=50).grid(row=0, column=1, padx=5)
+        tk.Button(convert_frame, text="Wybierz", command=self.browse_video_file).grid(row=0, column=2, padx=5)
+        
+        tk.Label(convert_frame, text="Bitrate (kbps):").grid(row=1, column=0, padx=5, sticky="w")
+        self.bitrate_var = tk.StringVar(value="800")
+        tk.Entry(convert_frame, textvariable=self.bitrate_var, width=10).grid(row=1, column=1, padx=5, sticky="w")
+        
+        tk.Button(convert_frame, text="Konwertuj do MP4", command=self.convert_video,
+                 bg="#2196F3", fg="white", height=1, width=15).grid(row=1, column=2, padx=5, pady=5)
+        
+        # Lista pobranych plików
+        file_frame = tk.LabelFrame(main_frame, text="📂 Pobrane Pliki", padx=10, pady=10)
+        file_frame.pack(fill="both", expand=True)
+        
+        self.file_listbox = tk.Listbox(file_frame)
+        self.file_listbox.pack(fill="both", expand=True, padx=5, pady=5)
+        self.file_listbox.bind("<Double-Button-1>", self.open_selected_file)
+        
+        # Przyciski zarządzania
+        btn_frame = tk.Frame(file_frame)
+        btn_frame.pack(fill="x", pady=5)
+        
+        tk.Button(btn_frame, text="Otwórz folder", command=self.open_download_directory,
+                 bg="#FF9800", fg="white").pack(side="left", padx=5)
+        tk.Button(btn_frame, text="Kopiuj ścieżkę", command=self.copy_file_path,
+                 bg="#9C27B0", fg="white").pack(side="left", padx=5)
+        tk.Button(btn_frame, text="Odtwórz", command=self.play_selected_file,
+                 bg="#4CAF50", fg="white").pack(side="left", padx=5)
+        
+        # Status bar
+        self.status_bar = tk.Label(self.root, text="Gotowy", bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+    
+    def start_monitoring(self):
+        self.monitoring = True
+        self.monitor_status.config(text="Status: Aktywny", fg="green")
+        self.update_status("Rozpoczęto monitorowanie schowka - szukam linków wideo")
+    
+    def stop_monitoring(self):
+        self.monitoring = False
+        self.monitor_status.config(text="Status: Nieaktywny", fg="red")
+        self.update_status("Zatrzymano monitorowanie schowka")
+    
+    def browse_directory(self):
+        directory = filedialog.askdirectory()
+        if directory:
+            self.download_dir_var.set(directory)
+    
+    def browse_video_file(self):
+        file_path = filedialog.askopenfilename(
+            filetypes=[("Pliki wideo", "*.mp4 *.mov *.avi *.mkv"), ("Wszystkie pliki", "*.*")]
+        )
+        if file_path:
+            self.video_path_var.set(file_path)
+    
+    def update_status(self, message):
+        self.status_bar.config(text=message)
+        print(message)
+    
+    def download_video(self, url):
+        try:
+            # Sprawdź czy to link do wideo
+            if not any(ext in url.lower() for ext in ['.mp4', '.mov', '.avi', '.mkv']):
+                return False
+            
+            # Oczyszczanie nazwy pliku z URL
+            parsed = urlparse(url)
+            filename = unquote(parsed.path.split("/")[-1])
+            
+            # Tworzenie folderu pobierania
+            download_dir = Path(self.download_dir_var.get())
+            download_dir.mkdir(exist_ok=True, parents=True)
+            file_path = download_dir / filename
+            
+            # Sprawdź czy plik już istnieje
+            if file_path.exists():
+                self.update_status(f"Plik już istnieje: {file_path}")
+                self.downloaded_files.append(str(file_path))
+                self.update_file_listbox()
+                return True
+            
+            # Pobieranie pliku
+            self.update_status(f"Pobieranie wideo: {url}")
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            
+            with open(file_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            self.update_status(f"Pobrano wideo: {file_path}")
+            self.downloaded_files.append(str(file_path))
+            self.update_file_listbox()
+            
+            # Automatyczna konwersja dla plików MOV
+            if file_path.suffix.lower() == ".mov":
+                self.update_status("Rozpoczynam konwersję MOV → MP4")
+                self.convert_video(str(file_path))
+            
+            return True
+            
+        except Exception as e:
+            self.update_status(f"Błąd pobierania: {str(e)}")
+            return False
+    
+    def update_file_listbox(self):
+        self.file_listbox.delete(0, tk.END)
+        for file_path in self.downloaded_files:
+            self.file_listbox.insert(tk.END, file_path)
+    
+    def open_download_directory(self):
+        download_dir = Path(self.download_dir_var.get())
+        if download_dir.exists():
+            if sys.platform == "win32":
+                os.startfile(str(download_dir))
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(download_dir)])
+            else:
+                subprocess.Popen(["xdg-open", str(download_dir)])
+        else:
+            messagebox.showerror("Błąd", "Folder nie istnieje!")
+    
+    def open_selected_file(self, event):
+        selection = self.file_listbox.curselection()
+        if not selection:
+            return
+            
+        index = selection[0]
+        file_path = Path(self.downloaded_files[index])
+        
+        if file_path.exists():
+            if sys.platform == "win32":
+                os.startfile(str(file_path))
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(file_path)])
+            else:
+                subprocess.Popen(["xdg-open", str(file_path)])
+        else:
+            messagebox.showerror("Błąd", "Plik nie istnieje!")
+    
+    def play_selected_file(self):
+        selection = self.file_listbox.curselection()
+        if not selection:
+            return
+            
+        index = selection[0]
+        file_path = Path(self.downloaded_files[index])
+        
+        if file_path.exists():
+            if file_path.suffix.lower() in ['.mp4', '.mov', '.avi', '.mkv']:
+                if sys.platform == "win32":
+                    os.startfile(str(file_path))
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", str(file_path)])
+                else:
+                    subprocess.Popen(["xdg-open", str(file_path)])
+            else:
+                messagebox.showinfo("Info", "To nie jest plik wideo")
+        else:
+            messagebox.showerror("Błąd", "Plik nie istnieje!")
+    
+    def copy_file_path(self):
+        selection = self.file_listbox.curselection()
+        if not selection:
+            return
+            
+        index = selection[0]
+        file_path = self.downloaded_files[index]
+        pyperclip.copy(file_path)
+        self.update_status(f"Skopiowano ścieżkę: {file_path}")
+    
+    def find_ffmpeg(self):
+        # Sprawdź standardowe lokalizacje ffmpeg
+        possible_paths = [
+            "ffmpeg",
+            "ffmpeg.exe",
+            "/usr/bin/ffmpeg",
+            "/usr/local/bin/ffmpeg",
+            "C:\\ffmpeg\\bin\\ffmpeg.exe"
+        ]
+        
+        for path in possible_paths:
+            try:
+                subprocess.run([path, "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+                return path
+            except:
+                continue
+        
+        return None
+    
+    def convert_video(self, input_path=None):
+        if not input_path:
+            input_path = self.video_path_var.get()
+        
+        if not input_path:
+            messagebox.showerror("Błąd", "Wybierz plik wideo do konwersji!")
+            return
+            
+        input_path = Path(input_path)
+        download_dir = Path(self.download_dir_var.get())
+        
+        if not input_path.exists():
+            messagebox.showerror("Błąd", "Plik wejściowy nie istnieje!")
+            return
+        
+        # Przygotuj nazwę pliku wyjściowego
+        output_path = download_dir / f"{input_path.stem}.mp4"
+        
+        # Przygotuj polecenie ffmpeg
+        bitrate = self.bitrate_var.get()
+        
+        cmd = [
+            self.ffmpeg_path,
+            "-i", str(input_path),
+            "-c:v", "libx264",
+            "-b:v", f"{bitrate}k",
+            "-movflags", "+faststart",
+            "-y",  # Nadpisz istniejący plik
+            str(output_path)
+        ]
+        
+        # Uruchom konwersję w osobnym wątku
+        threading.Thread(target=self.run_conversion, args=(cmd, input_path, output_path), daemon=True).start()
+    
+    def run_conversion(self, cmd, input_path, output_path):
+        try:
+            self.update_status(f"Rozpoczęto konwersję: {input_path} → {output_path}")
+            
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                bufsize=1,
+                encoding='utf-8',
+                errors='replace'
+            )
+            
+            # Wyświetlaj postęp
+            while True:
+                line = process.stdout.readline()
+                if not line:
+                    break
+                # Wykrywanie postępu konwersji
+                if "time=" in line:
+                    time_match = re.search(r"time=(\d+:\d+:\d+\.\d+)", line)
+                    if time_match:
+                        self.update_status(f"Konwersja... {time_match.group(1)}")
+            
+            process.communicate()
+            
+            if process.returncode == 0:
+                self.update_status(f"Konwersja zakończona: {output_path}")
+                self.downloaded_files.append(str(output_path))
+                self.update_file_listbox()
+                messagebox.showinfo("Sukces", f"Wideo skonwertowane do:\n{output_path}")
+            else:
+                self.update_status(f"Błąd konwersji! Kod: {process.returncode}")
+                messagebox.showerror("Błąd", "Konwersja nie powiodła się")
+        
+        except Exception as e:
+            self.update_status(f"Błąd konwersji: {str(e)}")
+            messagebox.showerror("Błąd", f"Nie udało się przekonwertować wideo: {str(e)}")
+    
+    def update_clipboard(self):
+        try:
+            current_clip = pyperclip.paste().strip()
+            
+            if (self.monitoring and 
+                current_clip != self.last_clip and 
+                current_clip.startswith(('http://', 'https://'))):
+                
+                if self.download_video(current_clip):
+                    self.last_clip = current_clip
+                else:
+                    self.last_clip = ""
+        
+        except Exception as e:
+            self.update_status(f"Błąd monitorowania: {str(e)}")
+        
+        self.root.after(1000, self.update_clipboard)
+    
+    def on_closing(self):
+        if self.monitoring:
+            self.stop_monitoring()
+        self.root.destroy()
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = VideoDownloader(root)
+    root.mainloop()
+Instrukcja dla Twojego przypadku:
+Pobierz demo.mov z czatu:
+
+Uruchom aplikację
+
+Kliknij "🚀 Start Monitoring"
+
+Skopiuj link do pliku demo.mov z czatu
+
+Aplikacja automatycznie pobierze plik do folderu wideo
+
+Automatyczna konwersja do MP4:
+
+Po pobraniu pliku MOV aplikacja automatycznie uruchomi konwersję do MP4
+
+Skonwertowany plik pojawi się w tym samym folderze jako demo.mp4
+
+Ręczna konwersja (jeśli potrzebujesz):
+
+Kliknij "Wybierz" i wybierz plik .mov do konwersji
+
+Ustaw bitrate (domyślnie 800k)
+
+Kliknij "Konwertuj do MP4"
+
+Kluczowe funkcje:
+Specjalizacja w plikach wideo:
+
+Automatyczne wykrywanie linków do wideo (.mp4, .mov, .avi, .mkv)
+
+Pobieranie bezpośrednio do folderu wideo
+
+Automatyczna konwersja:
+
+Natychmiastowa konwersja MOV → MP4 po pobraniu
+
+Optymalne ustawienia dla webu: -movflags +faststart
+
+Konfigurowalny bitrate
+
+Zarządzanie plikami:
+
+Lista pobranych plików
+
+Podwójne kliknięcie - otwórz plik
+
+"Odtwórz" - odtwarza plik wideo w domyślnej aplikacji
+
+"Otwórz folder" - pokazuje lokalizację plików
+
+Wymagania:
+
+Aplikacja próbuje automatycznie znaleźć ffmpeg
+
+Jeśli nie znajdzie, pobierz ffmpeg z https://ffmpeg.org/
+
+Umieść ffmpeg.exe w C:\ffmpeg\bin\ lub dodaj do PATH
+
+Jak działa konwersja wideo:
+Aplikacja używa polecenia:
+
+bash
+ffmpeg -i input.mov -c:v libx264 -b:v 800k -movflags +faststart -y output.mp4
+Parametry:
+
+-c:v libx264 - kodek H.264
+
+-b:v 800k - bitrate 800 kbps (możesz zmienić w aplikacji)
+
+-movflags +faststart - optymalizacja do streamingu
+
+-y - nadpisz istniejący plik
+
+Dla Twojego przypadku demo:
+Pobierz demo.mov z linku podanego w czacie
+
+Aplikacja automatycznie przekonwertuje do demo.mp4
+
+Użyj skonwertowanego pliku w swoim projekcie:
+
+html
+<video controls width="100%">
+  <source src="assets/demo.mp4" type="video/mp4">
+  Twoja przeglądarka nie obsługuje wideo HTML5.
+</video>
+Bezpieczeństwo:
+Wszystkie operacje lokalne
+
+Brak wysyłania danych na zewnątrz
+
+Pełna kontrola nad pobieranymi plikami
+
+To rozwiązanie pozwala szybko pobrać i przygotować pliki wideo z czatów do użycia w projektach webowych.

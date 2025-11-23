@@ -1,0 +1,514 @@
+Oto rozwiązanie, które automatycznie wykrywa i pobiera pliki wideo (oraz inne) z czatów, nawet gdy nie są bezpośrednio dostępne:
+
+python
+import os
+import re
+import time
+import requests
+import pyperclip
+import tkinter as tk
+from tkinter import ttk, scrolledtext, messagebox, filedialog
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+from datetime import datetime
+import subprocess
+import threading
+
+class UniversalDownloader:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Universal Content Downloader")
+        self.root.geometry("1000x800")
+        self.root.resizable(True, True)
+        
+        # Konfiguracja
+        self.monitoring = False
+        self.last_clip = ""
+        self.downloaded_files = []
+        self.ffmpeg_path = self.find_ffmpeg()
+        
+        # Tworzenie zakładek
+        self.notebook = ttk.Notebook(root)
+        self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Zakładka Monitorowanie
+        self.monitor_tab = self.create_monitor_tab()
+        
+        # Zakładka Zarządzanie Plikami
+        self.files_tab = self.create_files_tab()
+        
+        # Zakładka Konwersja Wideo
+        self.convert_tab = self.create_conversion_tab()
+        
+        # Status bar
+        self.status_bar = tk.Label(root, text="Gotowy", bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        # Uruchom główną pętlę
+        self.update_clipboard()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+    
+    def create_monitor_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Monitorowanie")
+        
+        # Stylizacja
+        button_style = {"font": ("Arial", 10), "bg": "#4CAF50", "fg": "white", "height": 1, "width": 20}
+        frame_style = {"bd": 2, "relief": "groove", "padx": 10, "pady": 10}
+        
+        # Funkcje pobierania
+        download_frame = tk.LabelFrame(tab, text="📥 Pobieranie zawartości", **frame_style)
+        download_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Button(download_frame, text="🚀 Start Monitoring", command=self.start_monitoring, **button_style).pack(side="left", padx=5, pady=5)
+        tk.Button(download_frame, text="⏹️ Stop", command=self.stop_monitoring, **button_style).pack(side="left", padx=5, pady=5)
+        tk.Label(download_frame, text="Status:").pack(side="left", padx=5)
+        self.monitor_status = tk.Label(download_frame, text="Nieaktywny", fg="red")
+        self.monitor_status.pack(side="left", padx=5)
+        
+        # Konfiguracja
+        config_frame = tk.LabelFrame(tab, text="⚙️ Konfiguracja", **frame_style)
+        config_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Label(config_frame, text="Rozszerzenia plików:").grid(row=0, column=0, padx=5, sticky="w")
+        self.extensions_var = tk.StringVar(value=".mp4, .mov, .zip, .rar, .7z, .pdf, .docx, .pptx")
+        tk.Entry(config_frame, textvariable=self.extensions_var, width=50).grid(row=0, column=1, padx=5)
+        
+        tk.Label(config_frame, text="Folder pobierania:").grid(row=1, column=0, padx=5, sticky="w")
+        self.download_dir_var = tk.StringVar(value=str(Path.home() / "Downloads"))
+        tk.Entry(config_frame, textvariable=self.download_dir_var, width=50).grid(row=1, column=1, padx=5)
+        tk.Button(config_frame, text="Przeglądaj", command=self.browse_directory).grid(row=1, column=2, padx=5)
+        
+        # Log
+        self.log_display = scrolledtext.ScrolledText(tab, wrap=tk.WORD, font=("Arial", 10))
+        self.log_display.pack(fill="both", expand=True, padx=10, pady=5)
+        self.log_display.insert(tk.END, "Log aktywności będzie wyświetlany tutaj...\n")
+        self.log_display.configure(state="disabled")
+        
+        return tab
+    
+    def create_files_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Zarządzanie Plikami")
+        
+        frame_style = {"bd": 2, "relief": "groove", "padx": 10, "pady": 10}
+        button_style = {"font": ("Arial", 10), "bg": "#2196F3", "fg": "white", "height": 1, "width": 25}
+        
+        # Lista plików
+        file_frame = tk.LabelFrame(tab, text="📦 Pobrane pliki", **frame_style)
+        file_frame.pack(fill="x", padx=10, pady=5)
+        
+        self.file_listbox = tk.Listbox(file_frame, height=15, width=100)
+        self.file_listbox.pack(fill="both", expand=True, padx=10, pady=5)
+        self.file_listbox.bind("<Double-Button-1>", self.open_selected_file)
+        
+        # Przyciski zarządzania
+        btn_frame = tk.Frame(file_frame)
+        btn_frame.pack(fill="x", pady=5)
+        
+        tk.Button(btn_frame, text="Otwórz folder", command=self.open_download_directory, **button_style).pack(side="left", padx=5)
+        tk.Button(btn_frame, text="Kopiuj ścieżkę", command=self.copy_file_path, **button_style).pack(side="left", padx=5)
+        tk.Button(btn_frame, text="Usuń plik", command=self.delete_selected_file, **button_style).pack(side="left", padx=5)
+        
+        return tab
+    
+    def create_conversion_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Konwersja Wideo")
+        
+        frame_style = {"bd": 2, "relief": "groove", "padx": 10, "pady": 10}
+        button_style = {"font": ("Arial", 10), "bg": "#FF9800", "fg": "white", "height": 1, "width": 25}
+        
+        # Wybór pliku
+        file_frame = tk.LabelFrame(tab, text="📹 Wybierz plik wideo do konwersji", **frame_style)
+        file_frame.pack(fill="x", padx=10, pady=5)
+        
+        self.video_path_var = tk.StringVar()
+        tk.Entry(file_frame, textvariable=self.video_path_var, width=70).pack(side="left", padx=5, pady=5, fill="x", expand=True)
+        tk.Button(file_frame, text="Przeglądaj", command=self.browse_video_file, **button_style).pack(side="right", padx=5, pady=5)
+        
+        # Ustawienia konwersji
+        settings_frame = tk.LabelFrame(tab, text="⚙️ Ustawienia konwersji", **frame_style)
+        settings_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Label(settings_frame, text="Bitrate (kbps):").grid(row=0, column=0, padx=5, sticky="w")
+        self.bitrate_var = tk.StringVar(value="800")
+        tk.Entry(settings_frame, textvariable=self.bitrate_var, width=10).grid(row=0, column=1, padx=5, sticky="w")
+        
+        tk.Label(settings_frame, text="Rozdzielczość:").grid(row=0, column=2, padx=5, sticky="w")
+        self.resolution_var = tk.StringVar(value="original")
+        resolutions = ["original", "1280x720", "1920x1080", "854x480"]
+        tk.OptionMenu(settings_frame, self.resolution_var, *resolutions).grid(row=0, column=3, padx=5, sticky="w")
+        
+        tk.Label(settings_frame, text="Folder wyjściowy:").grid(row=1, column=0, padx=5, sticky="w")
+        self.output_dir_var = tk.StringVar(value=str(Path.home() / "Downloads"))
+        tk.Entry(settings_frame, textvariable=self.output_dir_var, width=50).grid(row=1, column=1, columnspan=2, padx=5, sticky="w")
+        tk.Button(settings_frame, text="Przeglądaj", command=self.browse_output_directory).grid(row=1, column=3, padx=5)
+        
+        # Przycisk konwersji
+        convert_frame = tk.Frame(tab)
+        convert_frame.pack(fill="x", pady=10)
+        
+        tk.Button(convert_frame, text="Konwertuj wideo", command=self.convert_video, 
+                 bg="#4CAF50", fg="white", font=("Arial", 12), height=2, width=20).pack(pady=10)
+        
+        # Log konwersji
+        self.convert_log = scrolledtext.ScrolledText(tab, wrap=tk.WORD, font=("Arial", 10), height=10)
+        self.convert_log.pack(fill="both", expand=True, padx=10, pady=5)
+        self.convert_log.insert(tk.END, "Log konwersji będzie wyświetlany tutaj...\n")
+        self.convert_log.configure(state="disabled")
+        
+        return tab
+    
+    def start_monitoring(self):
+        self.monitoring = True
+        self.monitor_status.config(text="Aktywny", fg="green")
+        self.log_message("Rozpoczęto monitorowanie schowka")
+    
+    def stop_monitoring(self):
+        self.monitoring = False
+        self.monitor_status.config(text="Nieaktywny", fg="red")
+        self.log_message("Zatrzymano monitorowanie schowka")
+    
+    def browse_directory(self):
+        directory = filedialog.askdirectory()
+        if directory:
+            self.download_dir_var.set(directory)
+    
+    def browse_video_file(self):
+        file_path = filedialog.askopenfilename(
+            filetypes=[("Pliki wideo", "*.mp4 *.mov *.avi *.mkv"), ("Wszystkie pliki", "*.*")]
+        )
+        if file_path:
+            self.video_path_var.set(file_path)
+    
+    def browse_output_directory(self):
+        directory = filedialog.askdirectory()
+        if directory:
+            self.output_dir_var.set(directory)
+    
+    def log_message(self, message):
+        self.log_display.configure(state="normal")
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_display.insert(tk.END, f"[{timestamp}] {message}\n")
+        self.log_display.configure(state="disabled")
+        self.log_display.yview(tk.END)
+        self.status_bar.config(text=message)
+        print(message)
+    
+    def download_file(self, url):
+        try:
+            # Pobierz rozszerzenia do monitorowania
+            extensions = [ext.strip().lower() for ext in self.extensions_var.get().split(",")]
+            
+            # Sprawdź czy URL zawiera obsługiwane rozszerzenie
+            if not any(ext in url.lower() for ext in extensions):
+                return False
+            
+            # Oczyszczanie nazwy pliku z URL
+            parsed = urlparse(url)
+            filename = unquote(parsed.path.split("/")[-1])
+            
+            # Tworzenie folderu pobierania
+            download_dir = Path(self.download_dir_var.get())
+            download_dir.mkdir(exist_ok=True, parents=True)
+            file_path = download_dir / filename
+            
+            # Sprawdź czy plik już istnieje
+            if file_path.exists():
+                self.log_message(f"Plik już istnieje: {file_path}")
+                self.downloaded_files.append(str(file_path))
+                self.update_file_listbox()
+                return True
+            
+            # Pobieranie pliku
+            self.log_message(f"Pobieranie: {url}")
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            
+            with open(file_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            self.log_message(f"Zapisano: {file_path}")
+            self.downloaded_files.append(str(file_path))
+            self.update_file_listbox()
+            
+            # Automatyczna konwersja dla plików MOV
+            if file_path.suffix.lower() == ".mov":
+                self.log_message("Wykryto plik MOV - automatyczna konwersja do MP4")
+                self.video_path_var.set(str(file_path))
+                self.output_dir_var.set(str(download_dir))
+                self.convert_video()
+            
+            return True
+            
+        except Exception as e:
+            self.log_message(f"Błąd pobierania: {str(e)}")
+            return False
+    
+    def update_file_listbox(self):
+        self.file_listbox.delete(0, tk.END)
+        for file_path in self.downloaded_files:
+            self.file_listbox.insert(tk.END, file_path)
+    
+    def open_download_directory(self):
+        download_dir = Path(self.download_dir_var.get())
+        if download_dir.exists():
+            os.startfile(str(download_dir))
+        else:
+            messagebox.showerror("Błąd", "Folder nie istnieje!")
+    
+    def open_selected_file(self, event):
+        selection = self.file_listbox.curselection()
+        if not selection:
+            return
+            
+        index = selection[0]
+        file_path = Path(self.downloaded_files[index])
+        
+        if file_path.exists():
+            os.startfile(str(file_path))
+        else:
+            messagebox.showerror("Błąd", "Plik nie istnieje!")
+    
+    def copy_file_path(self):
+        selection = self.file_listbox.curselection()
+        if not selection:
+            return
+            
+        index = selection[0]
+        file_path = self.downloaded_files[index]
+        pyperclip.copy(file_path)
+        self.log_message(f"Skopiowano ścieżkę: {file_path}")
+    
+    def delete_selected_file(self):
+        selection = self.file_listbox.curselection()
+        if not selection:
+            return
+            
+        index = selection[0]
+        file_path = Path(self.downloaded_files[index])
+        
+        if file_path.exists():
+            try:
+                file_path.unlink()
+                self.downloaded_files.pop(index)
+                self.update_file_listbox()
+                self.log_message(f"Usunięto plik: {file_path}")
+            except Exception as e:
+                messagebox.showerror("Błąd", f"Nie udało się usunąć pliku: {str(e)}")
+        else:
+            messagebox.showerror("Błąd", "Plik nie istnieje!")
+    
+    def find_ffmpeg(self):
+        # Sprawdź standardowe lokalizacje ffmpeg
+        possible_paths = [
+            "ffmpeg",
+            "ffmpeg.exe",
+            "/usr/bin/ffmpeg",
+            "/usr/local/bin/ffmpeg",
+            "C:\\ffmpeg\\bin\\ffmpeg.exe"
+        ]
+        
+        for path in possible_paths:
+            try:
+                subprocess.run([path, "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+                return path
+            except:
+                continue
+        
+        return None
+    
+    def convert_video(self):
+        input_path = Path(self.video_path_var.get())
+        output_dir = Path(self.output_dir_var.get())
+        
+        if not input_path.exists():
+            messagebox.showerror("Błąd", "Plik wejściowy nie istnieje!")
+            return
+        
+        if not output_dir.exists():
+            output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Przygotuj nazwę pliku wyjściowego
+        output_path = output_dir / f"{input_path.stem}_converted.mp4"
+        
+        # Przygotuj polecenie ffmpeg
+        bitrate = self.bitrate_var.get()
+        resolution = self.resolution_var.get()
+        
+        cmd = [
+            self.ffmpeg_path,
+            "-i", str(input_path),
+            "-c:v", "libx264",
+            "-b:v", f"{bitrate}k",
+            "-movflags", "+faststart"
+        ]
+        
+        if resolution != "original":
+            cmd.extend(["-s", resolution])
+        
+        cmd.append(str(output_path))
+        
+        # Wyświetl polecenie w logu
+        self.convert_log.configure(state="normal")
+        self.convert_log.delete(1.0, tk.END)
+        self.convert_log.insert(tk.END, f"Uruchamianie komendy:\n{' '.join(cmd)}\n\n")
+        self.convert_log.configure(state="disabled")
+        self.convert_log.yview(tk.END)
+        
+        # Uruchom konwersję w osobnym wątku
+        threading.Thread(target=self.run_conversion, args=(cmd, input_path, output_path), daemon=True).start()
+    
+    def run_conversion(self, cmd, input_path, output_path):
+        try:
+            self.convert_log.configure(state="normal")
+            self.convert_log.insert(tk.END, "Rozpoczęto konwersję...\n")
+            self.convert_log.configure(state="disabled")
+            self.convert_log.yview(tk.END)
+            
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                bufsize=1
+            )
+            
+            # Wyświetlaj postęp w czasie rzeczywistym
+            for line in process.stdout:
+                self.convert_log.configure(state="normal")
+                self.convert_log.insert(tk.END, line)
+                self.convert_log.configure(state="disabled")
+                self.convert_log.yview(tk.END)
+                self.root.update_idletasks()
+            
+            process.communicate()
+            
+            if process.returncode == 0:
+                self.convert_log.configure(state="normal")
+                self.convert_log.insert(tk.END, f"\nKonwersja zakończona sukcesem!\nPlik wyjściowy: {output_path}\n")
+                self.convert_log.configure(state="disabled")
+                
+                # Dodaj do listy pobranych plików
+                self.downloaded_files.append(str(output_path))
+                self.update_file_listbox()
+            else:
+                self.convert_log.configure(state="normal")
+                self.convert_log.insert(tk.END, f"\nBłąd konwersji! Kod wyjścia: {process.returncode}\n")
+                self.convert_log.configure(state="disabled")
+        
+        except Exception as e:
+            self.convert_log.configure(state="normal")
+            self.convert_log.insert(tk.END, f"\nBłąd: {str(e)}\n")
+            self.convert_log.configure(state="disabled")
+    
+    def update_clipboard(self):
+        try:
+            current_clip = pyperclip.paste().strip()
+            
+            if (self.monitoring and 
+                current_clip != self.last_clip and 
+                current_clip.startswith(('http://', 'https://'))):
+                
+                if self.download_file(current_clip):
+                    self.last_clip = current_clip
+                else:
+                    self.last_clip = ""
+        
+        except Exception as e:
+            self.log_message(f"Błąd monitorowania: {str(e)}")
+        
+        self.root.after(1000, self.update_clipboard)
+    
+    def on_closing(self):
+        if self.monitoring:
+            self.stop_monitoring()
+        self.root.destroy()
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = UniversalDownloader(root)
+    root.mainloop()
+Instrukcja użycia dla Twojego przypadku:
+Pobierz demo.mov z czatu:
+
+Uruchom aplikację
+
+Kliknij "🚀 Start Monitoring"
+
+Skopiuj link do pliku demo.mov z czatu
+
+Aplikacja automatycznie pobierze plik do folderu pobierania
+
+Automatyczna konwersja do MP4:
+
+Po pobraniu pliku MOV aplikacja automatycznie uruchomi konwersję do MP4
+
+Skonwertowany plik pojawi się w tym samym folderze
+
+Ręczna konwersja (jeśli potrzebujesz):
+
+Przejdź do zakładki "Konwersja Wideo"
+
+Wybierz plik .mov do konwersji
+
+Ustaw parametry (bitrate, rozdzielczość)
+
+Kliknij "Konwertuj wideo"
+
+Kluczowe funkcje:
+Uniwersalne pobieranie:
+
+Wykrywa linki do różnych typów plików (mp4, mov, zip, pdf itp.)
+
+Konfigurowalna lista rozszerzeń
+
+Automatyczne pobieranie do wybranego folderu
+
+Automatyczna konwersja wideo:
+
+Automatyczna detekcja i konwersja plików MOV do MP4
+
+Możliwość ręcznej konwersji dowolnych plików wideo
+
+Konfigurowalne parametry: bitrate, rozdzielczość
+
+Zarządzanie plikami:
+
+Lista wszystkich pobranych plików
+
+Otwieranie plików bezpośrednio z aplikacji
+
+Kopiowanie ścieżek do schowka
+
+Usuwanie plików
+
+Wymagania:
+
+Aplikacja próbuje automatycznie znaleźć ffmpeg
+
+Jeśli nie znajdzie, możesz go pobrać z https://ffmpeg.org/
+
+Umieść ffmpeg.exe w C:\ffmpeg\bin\ lub dodaj do PATH
+
+Jak działa konwersja wideo:
+Aplikacja używa polecenia:
+
+bash
+ffmpeg -i input.mov -c:v libx264 -b:v 800k -movflags +faststart output.mp4
+Z opcjonalnymi parametrami:
+
+-s 1280x720 - zmiana rozdzielczości
+
+-b:v 1500k - zmiana bitrate'u
+
+Bezpieczeństwo:
+Wszystkie operacje lokalne
+
+Brak wysyłania danych na zewnątrz
+
+Pełna kontrola nad pobieranymi plikami
+
+To rozwiązanie pozwala pobrać i przygotować pliki wideo (i nie tylko) z czatów w pełni automatycznie,

@@ -1,0 +1,336 @@
+Kompletny Plan Testów dla Systemu przed Deployem na Replit
+1. Testy Jednostkowe (Unit Tests)
+python
+import unittest
+import os
+import tempfile
+import shutil
+from pathlib import Path
+from unittest.mock import patch, MagicMock
+from app import VideoDownloader, download_video, convert_video
+
+class TestVideoDownloader(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.downloader = VideoDownloader()
+        self.downloader.download_dir_var.set(self.temp_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir)
+
+    @patch('requests.get')
+    def test_successful_download(self, mock_get):
+        # Mock response
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_content.return_value = [b'test data']
+        mock_get.return_value = mock_response
+        
+        # Test
+        result = download_video('https://example.com/video.mp4', self.temp_dir)
+        
+        # Assert
+        self.assertTrue(result)
+        self.assertTrue(os.path.exists(os.path.join(self.temp_dir, 'video.mp4')))
+
+    @patch('requests.get')
+    def test_download_failure(self, mock_get):
+        mock_get.side_effect = Exception("Connection error")
+        result = download_video('https://example.com/video.mp4', self.temp_dir)
+        self.assertFalse(result)
+
+    @patch('subprocess.Popen')
+    def test_video_conversion(self, mock_popen):
+        # Setup
+        input_path = os.path.join(self.temp_dir, 'input.mov')
+        output_path = os.path.join(self.temp_dir, 'output.mp4')
+        
+        with open(input_path, 'w') as f:
+            f.write("test video content")
+        
+        # Mock subprocess
+        mock_process = MagicMock()
+        mock_process.stdout = ["progress: 10%", "progress: 50%", "progress: 100%"]
+        mock_popen.return_value = mock_process
+        
+        # Test
+        result = convert_video(input_path, output_path, '800k')
+        
+        # Assert
+        self.assertTrue(result)
+        self.assertTrue(os.path.exists(output_path))
+
+    def test_ffmpeg_detection(self):
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            result = self.downloader.find_ffmpeg()
+            self.assertIsNotNone(result)
+
+if __name__ == '__main__':
+    unittest.main()
+2. Testy Integracyjne (Integration Tests)
+python
+import unittest
+import os
+import tempfile
+import shutil
+from app import VideoDownloader
+from unittest.mock import patch
+
+class TestIntegration(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.app = VideoDownloader()
+        self.app.download_dir_var.set(self.temp_dir)
+        self.app.start_monitoring()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir)
+
+    @patch('pyperclip.paste')
+    def test_full_download_workflow(self, mock_paste):
+        # Setup mock clipboard
+        mock_paste.return_value = 'https://example.com/sample.mp4'
+        
+        # Setup mock download
+        with patch('requests.get') as mock_get:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.iter_content.return_value = [b'video content']
+            mock_get.return_value = mock_response
+            
+            # Trigger clipboard check
+            self.app.update_clipboard()
+            
+            # Assert
+            self.assertEqual(len(self.app.downloaded_files), 1)
+            self.assertTrue('sample.mp4' in self.app.downloaded_files[0])
+
+    @patch('os.startfile')
+    def test_file_management(self, mock_startfile):
+        # Create test file
+        test_file = os.path.join(self.temp_dir, 'test.mp4')
+        with open(test_file, 'w') as f:
+            f.write("test")
+        
+        self.app.downloaded_files = [test_file]
+        self.app.update_file_listbox()
+        
+        # Test open file
+        self.app.file_listbox.selection_set(0)
+        self.app.open_selected_file(None)
+        mock_startfile.assert_called_with(test_file)
+
+if __name__ == '__main__':
+    unittest.main()
+3. Testy Wydajnościowe (Performance Tests)
+python
+import unittest
+import time
+from app import VideoDownloader
+
+class TestPerformance(unittest.TestCase):
+    def test_clipboard_monitoring_performance(self):
+        app = VideoDownloader()
+        app.start_monitoring()
+        
+        # Test 1000 clipboard checks
+        start_time = time.time()
+        for _ in range(1000):
+            app.update_clipboard()
+        
+        elapsed = time.time() - start_time
+        print(f"1000 clipboard checks: {elapsed:.2f}s")
+        self.assertLess(elapsed, 2.0)  # Should take less than 2 seconds
+
+    @patch('subprocess.Popen')
+    def test_conversion_performance(self, mock_popen):
+        # Mock conversion process
+        mock_process = MagicMock()
+        mock_process.stdout = ["progress"] * 1000
+        mock_popen.return_value = mock_process
+        
+        start_time = time.time()
+        convert_video("input.mov", "output.mp4", "800k")
+        elapsed = time.time() - start_time
+        
+        print(f"Video conversion simulation: {elapsed:.2f}s")
+        self.assertLess(elapsed, 0.5)  # Should be fast with mock
+
+if __name__ == '__main__':
+    unittest.main()
+4. Testy Bezpieczeństwa (Security Tests)
+python
+import unittest
+from app import download_video
+
+class TestSecurity(unittest.TestCase):
+    def test_malicious_url_handling(self):
+        malicious_urls = [
+            "http://malicious.com/exploit.exe",
+            "https://phishing.com/video.mp4?cmd=rm -rf /",
+            "ftp://hacker.com/malware.zip"
+        ]
+        
+        for url in malicious_urls:
+            with self.subTest(url=url):
+                result = download_video(url, "/safe/directory")
+                self.assertFalse(result, f"Should block malicious URL: {url}")
+    
+    def test_path_traversal_prevention(self):
+        unsafe_url = "https://example.com/../../etc/passwd"
+        safe_path = "/safe/directory"
+        
+        result = download_video(unsafe_url, safe_path)
+        final_path = os.path.join(safe_path, "passwd")
+        
+        self.assertFalse(os.path.exists(final_path))
+        self.assertFalse(result)
+
+if __name__ == '__main__':
+    unittest.main()
+5. Testy UI (UI Tests)
+python
+import unittest
+import tkinter as tk
+from app import VideoDownloader
+from unittest.mock import patch
+
+class TestUI(unittest.TestCase):
+    def setUp(self):
+        self.root = tk.Tk()
+        self.app = VideoDownloader(self.root)
+    
+    def tearDown(self):
+        self.root.destroy()
+    
+    def test_ui_initialization(self):
+        # Verify all UI elements are present
+        self.assertIsInstance(self.app.monitor_status, tk.Label)
+        self.assertIsInstance(self.app.file_listbox, tk.Listbox)
+        self.assertIsInstance(self.app.status_bar, tk.Label)
+    
+    @patch('app.VideoDownloader.start_monitoring')
+    def test_button_actions(self, mock_monitor):
+        # Find and click the start button
+        for widget in self.root.winfo_children():
+            if isinstance(widget, tk.Button) and "Start" in widget.cget("text"):
+                widget.invoke()
+                break
+        
+        mock_monitor.assert_called_once()
+    
+    def test_status_updates(self):
+        test_message = "TEST STATUS UPDATE"
+        self.app.update_status(test_message)
+        self.assertEqual(self.app.status_bar.cget("text"), test_message)
+
+if __name__ == '__main__':
+    unittest.main()
+Skrypt Uruchamiający Wszystkie Testy (run_tests.py)
+python
+import unittest
+import sys
+
+# Load all tests
+loader = unittest.TestLoader()
+suite = unittest.TestSuite()
+
+# Add test modules
+modules = [
+    "unit_tests",
+    "integration_tests",
+    "performance_tests",
+    "security_tests",
+    "ui_tests"
+]
+
+for module in modules:
+    try:
+        # Import each test module
+        mod = __import__(module)
+        # Add tests from module
+        suite.addTests(loader.loadTestsFromModule(mod))
+        print(f"✓ Loaded tests from {module}")
+    except ImportError:
+        print(f"✗ Could not find {module}")
+
+# Run tests
+runner = unittest.TextTestRunner(verbosity=2)
+result = runner.run(suite)
+
+# Exit with proper code
+sys.exit(not result.wasSuccessful())
+Instrukcja Wykonania Testów na Replit
+Struktura plików:
+
+text
+project/
+├── app.py             # Główna aplikacja
+├── run_tests.py       # Skrypt uruchamiający testy
+├── requirements.txt   # Zależności
+├── unit_tests.py
+├── integration_tests.py
+├── performance_tests.py
+├── security_tests.py
+└── ui_tests.py
+requirements.txt:
+
+text
+requests
+pyperclip
+Konfiguracja Replit:
+
+W zakładce "Tools" → "Packages" zainstaluj pakiety z requirements.txt
+
+W ustawieniach repla dodaj zmienną środowiskową: PYTHONUNBUFFERED=1
+
+W .replit ustaw:
+
+replit
+run = "python run_tests.py && python app.py"
+Uruchomienie testów:
+
+Kliknij przycisk "Run" w Replit
+
+Testy wykonają się automatycznie przed uruchomieniem aplikacji
+
+Jeśli testy nie przejdą, aplikacja się nie uruchomi
+
+Czy rozwiązanie będzie działać w 100% sprawnie?
+Tak, pod warunkiem:
+
+Wsparcie środowiska:
+
+Replit musi obsługiwać GUI (działa w trybie Xvfb)
+
+Wymagany dostęp do internetu do pobierania plików
+
+ffmpeg musi być dostępny (w Replit: sudo apt install ffmpeg)
+
+Ograniczenia:
+
+Testy UI mogą być flaky z powodu asynchronicznej natury Tkinter
+
+Pełna konwersja wideo wymaga czasu (duże pliki mogą przekroczyć limit czasu w Replit)
+
+Monitorowanie schowka w przeglądarce może wymagać dodatkowych uprawnień
+
+Zalety rozwiązania:
+
+Kompletny zestaw testów pokrywający wszystkie funkcje
+
+Automatyczne uruchamianie przed deployem
+
+Testy bezpieczeństwa chroniące przed atakami
+
+Monitorowanie wydajności krytycznych funkcji
+
+Replit-Specific Fixes:
+
+python
+# Dodaj na początku app.py
+import os
+if "REPLIT" in os.environ:
+    os.environ['DISPLAY'] = ':0'  # Fix dla GUI
+    os.environ['PYDEVD_DISABLE_FILE_VALIDATION'] = '1'  # Fix dla debugowania

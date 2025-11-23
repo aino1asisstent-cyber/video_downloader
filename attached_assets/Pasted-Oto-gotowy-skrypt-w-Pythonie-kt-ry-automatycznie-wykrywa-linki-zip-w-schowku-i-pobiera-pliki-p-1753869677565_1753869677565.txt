@@ -1,0 +1,119 @@
+Oto gotowy skrypt w Pythonie, który automatycznie wykrywa linki .zip w schowku i pobiera pliki:
+
+python
+import os
+import time
+import requests
+import pyperclip
+from urllib.parse import unquote
+from pathlib import Path
+
+def download_zip(url):
+    try:
+        # Oczyszczanie nazwy pliku z URL
+        filename = unquote(url.split("/")[-1])
+        if not filename.endswith('.zip'):
+            filename += '.zip'
+        
+        # Tworzenie folderu pobierania
+        download_dir = Path.home() / "zip_downloads"
+        download_dir.mkdir(exist_ok=True)
+        file_path = download_dir / filename
+        
+        # Pobieranie pliku
+        print(f"Pobieranie: {url}")
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+        
+        with open(file_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        print(f"Zapisano: {file_path}")
+        return True
+        
+    except Exception as e:
+        print(f"Błąd: {str(e)}")
+        return False
+
+def main():
+    last_clip = ""
+    print("Monitor schowka uruchomiony... (Ctrl+C aby wyjść)")
+    print("Skopiuj link do pliku .zip")
+    
+    try:
+        while True:
+            current_clip = pyperclip.paste().strip()
+            
+            if (current_clip != last_clip and 
+                current_clip.startswith(('http://', 'https://')) and 
+                '.zip' in current_clip.lower()):
+                
+                if download_zip(current_clip):
+                    last_clip = current_clip
+                else:
+                    last_clip = ""  # Reset przy błędzie
+            
+            time.sleep(1)  # Sprawdzaj co sekundę
+            
+    except KeyboardInterrupt:
+        print("\nZatrzymano monitor schowka")
+
+if __name__ == "__main__":
+    main()
+Wymagania:
+
+Zainstaluj potrzebne biblioteki:
+
+bash
+pip install requests pyperclip
+Jak to działa:
+
+Skrypt działa w tle i monitoruje schowek
+
+Gdy wykryje link zaczynający się od http:///https:// zawierający .zip:
+
+Pobiera plik w tle
+
+Zapisuje do folderu zip_downloads w twoim katalogu domowym
+
+Automatycznie tworzy folder jeśli nie istnieje
+
+Ignoruje duplikaty (nie pobiera tego samego linku wielokrotnie)
+
+Użycie:
+
+Uruchom skrypt
+
+Skopiuj link do pliku .zip (np. z ChatGPT)
+
+Skrypt automatycznie rozpocznie pobieranie
+
+Wyniki zobaczysz w konsoli i folderze zip_downloads
+
+Bezpieczeństwo:
+
+Obsługuje niepoprawne linki
+
+Blokuje wielokrotne pobieranie
+
+Chroni przed uszkodzonymi plikami
+
+Dekoduje specjalne znaki w nazwach plików
+
+Przykładowy folder wynikowy:
+
+text
+C:\Users\twoja_nazwa\zip_downloads\
+  ├── plik1.zip
+  ├── archiwum.zip
+  └── dane_2024.zip
+Aby zatrzymać skrypt: wciśnij Ctrl+C w oknie konsoli
+
+Możesz modyfikować:
+
+download_dir - zmień ścieżkę zapisu
+
+time.sleep(1) - zmień częstotliwość sprawdzania schowka
+
+Rozszerzenia plików (dodaj np. .rar)
