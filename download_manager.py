@@ -1,22 +1,24 @@
-
 #!/usr/bin/env python3
 """
 Zaawansowany system zarządzania pobieraniem
 - Kolejka pobierania z priorytetami
 - Równoległe pobieranie z limitem
+- Rate limiting - ochrona przed spamem
 - Detekcja duplikatów
 - Walidacja bezpieczeństwa
 """
 
+import hashlib
+import re
 import threading
 import time
-import hashlib
-import requests
+from collections import deque
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
-import re
-from datetime import datetime
-import os
+
+import requests
+
 
 class DownloadManager:
     def __init__(self, max_concurrent=3, max_file_size=500*1024*1024):
@@ -30,6 +32,11 @@ class DownloadManager:
         self.running = False
         self.callbacks = {}
         
+        # Rate limiting
+        self.download_history = deque(maxlen=100)  # Ostatnie 100 pobrań
+        self.rate_limit_per_minute = 10  # Max 10 pobrań na minutę
+        self.rate_limit_per_hour = 50    # Max 50 pobrań na godzinę
+        
         # Blacklisted domains for security
         self.blacklisted_domains = [
             "malicious.com",
@@ -40,6 +47,34 @@ class DownloadManager:
         
         # Video file extensions
         self.video_extensions = ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.flv', '.wmv', '.m4v']
+    
+    def check_rate_limit(self):
+        """Sprawdź czy nie przekroczono limitów rate limiting"""
+        current_time = time.time()
+        
+        # Sprawdź limit na minutę
+        downloads_last_minute = [
+            t for t in self.download_history 
+            if current_time - t < 60
+        ]
+        
+        if len(downloads_last_minute) >= self.rate_limit_per_minute:
+            return False, f"Przekroczono limit {self.rate_limit_per_minute} pobrań na minutę"
+        
+        # Sprawdź limit na godzinę
+        downloads_last_hour = [
+            t for t in self.download_history 
+            if current_time - t < 3600
+        ]
+        
+        if len(downloads_last_hour) >= self.rate_limit_per_hour:
+            return False, f"Przekroczono limit {self.rate_limit_per_hour} pobrań na godzinę"
+        
+        return True, "OK"
+    
+    def record_download_attempt(self):
+        """Zapisz próbę pobrania do historii rate limiting"""
+        self.download_history.append(time.time())
     
     def add_callback(self, event, callback):
         """Dodaj callback dla wydarzeń (start, progress, complete, error)"""
@@ -142,12 +177,18 @@ class DownloadManager:
             
             return True, file_size
             
-        except Exception as e:
+        except Exception:
             # Jeśli nie można sprawdzić rozmiaru, pozwól na pobieranie
             return True, 0
     
     def add_to_queue(self, url, download_dir, priority=0):
         """Dodaj URL do kolejki pobierania"""
+        # Sprawdź rate limiting
+        rate_ok, rate_message = self.check_rate_limit()
+        if not rate_ok:
+            self.trigger_callback('error', url, f"Rate limit: {rate_message}")
+            return False
+        
         # Walidacja URL
         is_valid, message = self.is_valid_url(url)
         if not is_valid:
@@ -177,6 +218,9 @@ class DownloadManager:
             # Dodaj z zachowaniem priorytetu
             self.queue.append(download_item)
             self.queue.sort(key=lambda x: x['priority'], reverse=True)
+            
+            # Zapisz próbę pobrania dla rate limiting
+            self.record_download_attempt()
             
             self.trigger_callback('queued', url)
             return True
@@ -330,6 +374,28 @@ class DownloadManager:
                 'failed': len(self.failed),
                 'running': self.running
             }
+    
+    def get_rate_limit_status(self):
+        """Pobierz status rate limiting"""
+        current_time = time.time()
+        
+        downloads_last_minute = len([
+            t for t in self.download_history 
+            if current_time - t < 60
+        ])
+        
+        downloads_last_hour = len([
+            t for t in self.download_history 
+            if current_time - t < 3600
+        ])
+        
+        return {
+            'last_minute': downloads_last_minute,
+            'last_hour': downloads_last_hour,
+            'limit_per_minute': self.rate_limit_per_minute,
+            'limit_per_hour': self.rate_limit_per_hour,
+            'total_history': len(self.download_history)
+        }
     
     def clear_completed(self):
         """Wyczyść listę ukończonych pobierań"""
